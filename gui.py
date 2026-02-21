@@ -3,6 +3,7 @@ import sys
 import time
 import gc
 import threading
+import time as time_module
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.table import Table
@@ -13,10 +14,10 @@ last_result = None
 # Global settings for damage prevention
 SETTINGS = {
     "batch_size": 1000,           # Files per batch
-    "batch_delay": 0.01,           # Delay between batches (seconds)
-    "reduce_priority": True,       # Lower process priority
+    "batch_delay": 0.01,         # Delay between batches (seconds)
+    "reduce_priority": True,      # Lower process priority
     "exclude_system_folders": True,# Exclude Windows system folders
-    "max_memory_mb": 500,          # Max memory before batch cleanup
+    "max_memory_mb": 500,        # Max memory before batch cleanup
     "output_folder": "file_indexer/output",  # Default output folder
 }
 
@@ -132,55 +133,61 @@ def format_size(size_bytes):
 
 def show_settings():
     """Display and allow editing of settings."""
-    clear_screen()
-    console.print("[bold cyan]SETTINGS[/bold cyan]")
-    console.print("-" * 40)
-    console.print(f"[cyan]1.[/cyan] Batch size: {SETTINGS['batch_size']} files")
-    console.print(f"[cyan]2.[/cyan] Batch delay: {SETTINGS['batch_delay']*1000:.1f}ms")
-    console.print(f"[cyan]3.[/cyan] Reduce process priority: {SETTINGS['reduce_priority']}")
-    console.print(f"[cyan]4.[/cyan] Exclude system folders: {SETTINGS['exclude_system_folders']}")
-    console.print(f"[cyan]5.[/cyan] Output folder: {SETTINGS['output_folder']}")
-    console.print(f"[cyan]6.[/cyan] Back to main menu")
-    console.print()
-    console.print("[bold cyan]Enter choice to modify: [/bold cyan]", end="")
-    
-    try:
-        choice = console.input().strip()
-    except EOFError:
-        return
-    
-    if choice == "1":
+    while True:
+        clear_screen()
+        console.print("[bold cyan]SETTINGS[/bold cyan]")
+        console.print("-" * 40)
+        console.print(f"[cyan]1.[/cyan] Batch size: {SETTINGS['batch_size']} files")
+        console.print(f"[cyan]2.[/cyan] Batch delay: {SETTINGS['batch_delay']*1000:.1f}ms")
+        console.print(f"[cyan]3.[/cyan] Reduce process priority: {SETTINGS['reduce_priority']}")
+        console.print(f"[cyan]4.[/cyan] Exclude system folders: {SETTINGS['exclude_system_folders']}")
+        console.print(f"[cyan]5.[/cyan] Output folder: {SETTINGS['output_folder']}")
+        console.print(f"[cyan]6.[/cyan] Back to main menu")
+        console.print()
+        console.print("[bold cyan]Enter choice to modify: [/bold cyan]", end="")
+        
         try:
-            console.print("\nEnter batch size (100-10000): ", end="")
-            new_size = int(console.input().strip())
-            if 100 <= new_size <= 10000:
-                SETTINGS["batch_size"] = new_size
-        except ValueError:
-            pass
-    elif choice == "2":
-        try:
-            console.print("\nEnter delay in ms (0-100): ", end="")
-            new_delay = int(console.input().strip())
-            if 0 <= new_delay <= 100:
-                SETTINGS["batch_delay"] = new_delay / 1000
-        except ValueError:
-            pass
-    elif choice == "3":
-        SETTINGS["reduce_priority"] = not SETTINGS["reduce_priority"]
-    elif choice == "4":
-        SETTINGS["exclude_system_folders"] = not SETTINGS["exclude_system_folders"]
-    elif choice == "5":
-        console.print("\nEnter output folder path: ", end="")
-        new_path = console.input().strip()
-        if new_path:
-            SETTINGS["output_folder"] = new_path
-    elif choice == "6":
-        return
-    
-    # Show updated settings
-    console.print("\n[green]Settings updated![/green]")
-    time.sleep(1)
-    show_settings()
+            choice = console.input().strip()
+        except EOFError:
+            return
+        
+        if choice == "1":
+            try:
+                console.print("\nEnter batch size (100-10000): ", end="")
+                new_size = int(console.input().strip())
+                if 100 <= new_size <= 10000:
+                    SETTINGS["batch_size"] = new_size
+            except (ValueError, EOFError):
+                pass
+        elif choice == "2":
+            try:
+                console.print("\nEnter delay in ms (0-100): ", end="")
+                new_delay = int(console.input().strip())
+                if 0 <= new_delay <= 100:
+                    SETTINGS["batch_delay"] = new_delay / 1000
+            except (ValueError, EOFError):
+                pass
+        elif choice == "3":
+            SETTINGS["reduce_priority"] = not SETTINGS["reduce_priority"]
+        elif choice == "4":
+            SETTINGS["exclude_system_folders"] = not SETTINGS["exclude_system_folders"]
+        elif choice == "5":
+            console.print("\nEnter output folder path: ", end="")
+            try:
+                new_path = console.input().strip()
+                if new_path:
+                    SETTINGS["output_folder"] = new_path
+            except EOFError:
+                pass
+        elif choice == "6":
+            return
+        else:
+            console.print("\n[yellow]Invalid choice.[/yellow]")
+            time.sleep(1)
+        
+        # Show updated message
+        console.print("\n[green]Settings updated![/green]")
+        time.sleep(0.5)
 
 
 def index_path(paths, output_path, sort_by="path"):
@@ -209,36 +216,47 @@ def index_path(paths, output_path, sort_by="path"):
     
     console.print()
     
-    # Phase 1: Quick scan to count files with spinner
+    # Phase 1: Quick scan to count files
     console.print("[bold]Scanning files...[/bold]")
     
     from src.indexer import index_directory
     
-    # Quick pass to count total files (with system folder exclusion)
+    # Collect ALL files first for consistent results (no filtering during scan)
     all_files = []
-    skipped_system = 0
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-        transient=True
-    ) as progress:
-        task = progress.add_task("[cyan]Counting files...", total=None)
-        
-        for path in paths:
-            try:
-                console.print(f"  Scanning: {path}")
-                for metadata in index_directory(path):
-                    # Check for system folders
-                    if check_system_folders(metadata.path):
-                        skipped_system += 1
-                        continue
-                    all_files.append(metadata)
-                    # Update spinner to show we're still working
-                    if len(all_files) % 100 == 0:
-                        progress.update(task, description=f"[cyan]Found {len(all_files):,} files...")
-            except Exception as e:
-                console.print(f"[red]  Error scanning {path}: {e}[/red]")
+    last_update_time = time_module.time()
+    update_interval = 1.0  # Update every 1 second
+    
+    for path in paths:
+        try:
+            console.print(f"  Scanning: {path}")
+            file_count = 0
+            for metadata in index_directory(path):
+                all_files.append(metadata)
+                file_count += 1
+                
+                # Time-based update to console (every 1 second)
+                current_time = time_module.time()
+                if current_time - last_update_time >= update_interval:
+                    console.print(f"    [cyan]Found {len(all_files):,} files...[/cyan]", end="\r")
+                    last_update_time = current_time
+        except Exception as e:
+            console.print(f"[red]  Error scanning {path}: {e}[/red]")
+    
+    # Clear the "Found X files" line
+    console.print(" " * 50, end="\r")
+    
+    # Now filter out system folders AFTER scanning is complete for consistent results
+    if SETTINGS["exclude_system_folders"]:
+        filtered_files = []
+        skipped_system = 0
+        for metadata in all_files:
+            if check_system_folders(metadata.path):
+                skipped_system += 1
+            else:
+                filtered_files.append(metadata)
+        all_files = filtered_files
+    else:
+        skipped_system = 0
     
     if skipped_system > 0:
         console.print(f"[dim]Skipped {skipped_system:,} files in system folders[/dim]")
