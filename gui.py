@@ -2,7 +2,6 @@ import os
 import sys
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
-from rich.panel import Panel
 from rich.table import Table
 
 console = Console()
@@ -13,28 +12,12 @@ def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
 
 
-def print_header(title):
-    """Print decorative header using ASCII only"""
-    # Center the header text properly
-    header_lines = [
-        "=" * 74,
-        "",
-        "                      FILE INDEXER - CLI TOOL",
-        "                     Fast * Reliable * Easy to Use",
-        "",
-        "=" * 74,
-    ]
-    header = "\n".join(header_lines)
-    console.print(Panel(header, border_style="green", padding=(0, 2)))
-    console.print(Panel(f"[bold green]{title}[/bold green]", border_style="green", padding=(0, 2)))
-    console.print()
-
-
 def print_menu():
     clear_screen()
-    print_header("MAIN MENU")
     
     # Compact menu with tight spacing
+    console.print("[bold cyan]MAIN MENU[/bold cyan]")
+    console.print("-" * 40)
     console.print("[cyan]1.[/cyan] Index specific directory")
     console.print("[cyan]2.[/cyan] Index all drives")
     console.print("[cyan]3.[/cyan] Index a specific drive")
@@ -284,7 +267,8 @@ def view_last_result():
         return
     
     clear_screen()
-    print_header("LAST INDEXING RESULT")
+    console.print("\n[bold cyan]LAST INDEXING RESULT[/bold cyan]")
+    console.print("-" * 40)
     
     console.print("\n[bold]Summary:[/bold]")
     console.print(f"[green]  Total files: {last_result.summary.total_files:,}[/green]")
