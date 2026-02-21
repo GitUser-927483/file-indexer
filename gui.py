@@ -4,7 +4,6 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.panel import Panel
 from rich.table import Table
-from rich import box
 
 console = Console()
 last_result = None
@@ -16,14 +15,18 @@ def clear_screen():
 
 def print_header(title):
     """Print decorative header using ASCII only"""
-    header = f"""
-{"=" * 70}
-                            FILE INDEXER - CLI TOOL
-                          Fast • Reliable • Easy to Use
-{"=" * 70}
-"""
-    console.print(Panel(header, border_style="green"))
-    console.print(Panel(f"[bold green]{title}[/bold green]", border_style="green"))
+    # Center the header text properly
+    header_lines = [
+        "=" * 74,
+        "",
+        "                      FILE INDEXER - CLI TOOL",
+        "                     Fast * Reliable * Easy to Use",
+        "",
+        "=" * 74,
+    ]
+    header = "\n".join(header_lines)
+    console.print(Panel(header, border_style="green", padding=(0, 2)))
+    console.print(Panel(f"[bold green]{title}[/bold green]", border_style="green", padding=(0, 2)))
     console.print()
 
 
@@ -31,19 +34,14 @@ def print_menu():
     clear_screen()
     print_header("MAIN MENU")
     
-    # Create a nice table menu
-    table = Table(show_header=False, box=box.SIMPLE, expand=True)
-    table.add_column("Option", style="cyan bold", width=2)
-    table.add_column("Description", style="white")
-    
-    table.add_row("1", "Index specific directory")
-    table.add_row("2", "Index all drives")
-    table.add_row("3", "Index a specific drive")
-    table.add_row("4", "View last result")
-    table.add_row("5", "Exit")
-    
-    console.print(table)
-    console.print("\n[bold cyan]Enter your choice:[/bold cyan]", end=" ")
+    # Compact menu with tight spacing
+    console.print("[cyan]1.[/cyan] Index specific directory")
+    console.print("[cyan]2.[/cyan] Index all drives")
+    console.print("[cyan]3.[/cyan] Index a specific drive")
+    console.print("[cyan]4.[/cyan] View last result")
+    console.print("[cyan]5.[/cyan] Exit")
+    console.print()
+    console.print("[bold cyan]Enter your choice: [/bold cyan]", end="")
 
 
 def get_drives():
@@ -71,17 +69,30 @@ def index_path(paths, output_path, sort_by="path"):
     console.print(f"\n[yellow]Starting indexing...[/yellow]")
     console.print(f"Target: {', '.join(paths)}\n")
     
-    # Collect all files first to get accurate count
+    # Phase 1: Quick scan to count files with spinner
     console.print("[bold]Scanning files...[/bold]")
+    
+    from src.indexer import index_directory
+    
+    # Quick pass to count total files
     all_files = []
-    for path in paths:
-        try:
-            from src.indexer import index_directory
-            console.print(f"  Scanning: {path}")
-            for metadata in index_directory(path):
-                all_files.append(metadata)
-        except Exception as e:
-            console.print(f"[red]  Error scanning {path}: {e}[/red]")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+        transient=True
+    ) as progress:
+        task = progress.add_task("[cyan]Counting files...", total=None)
+        
+        for path in paths:
+            try:
+                console.print(f"  Scanning: {path}")
+                for metadata in index_directory(path):
+                    all_files.append(metadata)
+                    # Update spinner to show we're still working
+                    progress.update(task, description=f"[cyan]Found {len(all_files):,} files...")
+            except Exception as e:
+                console.print(f"[red]  Error scanning {path}: {e}[/red]")
     
     total_files = len(all_files)
     if total_files == 0:
@@ -94,7 +105,7 @@ def index_path(paths, output_path, sort_by="path"):
     
     console.print(f"[green]Found {total_files:,} files to index[/green]\n")
     
-    # Create progress bar
+    # Phase 2: Process files with progress bar
     with Progress(
         SpinnerColumn("dots"),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
