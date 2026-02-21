@@ -1,5 +1,8 @@
 import os
 import sys
+import time
+import gc
+import threading
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.table import Table
@@ -7,9 +10,92 @@ from rich.table import Table
 console = Console()
 last_result = None
 
+# Global settings for damage prevention
+SETTINGS = {
+    "batch_size": 1000,           # Files per batch
+    "batch_delay": 0.01,           # Delay between batches (seconds)
+    "reduce_priority": True,       # Lower process priority
+    "exclude_system_folders": True,# Exclude Windows system folders
+    "max_memory_mb": 500,          # Max memory before batch cleanup
+    "output_folder": "file_indexer/output",  # Default output folder
+}
+
+# System folders to exclude by default
+SYSTEM_FOLDERS = {
+    "$Recycle.Bin",
+    "System Volume Information",
+    "Windows",
+    "ProgramData",
+    "Recovery",
+    "Config.Msi",
+    "MSOCache",
+    "$WinREAgent",
+    "Program Files",
+    "Program Files (x86)",
+}
+
 
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
+
+
+def set_low_priority():
+    """Reduce process priority to minimize system impact."""
+    if os.name == 'nt' and SETTINGS["reduce_priority"]:
+        try:
+            import ctypes
+            PROCESS_SET_INFORMATION = 0x0200
+            IDLE_PROCESS_PRIORITY_CLASS = 0x40
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.kernel32.SetPriorityClass(handle, IDLE_PROCESS_PRIORITY_CLASS)
+        except Exception:
+            pass  # Silently fail if not admin
+
+
+def get_memory_usage():
+    """Get current memory usage in MB."""
+    try:
+        import psutil
+        process = psutil.Process()
+        return process.memory_info().rss / (1024 * 1024)
+    except ImportError:
+        return 0
+
+
+def check_system_folders(path):
+    """Check if path contains system folders to exclude."""
+    if not SETTINGS["exclude_system_folders"]:
+        return False
+    
+    path_parts = path.split(os.sep)
+    for part in path_parts:
+        if part in SYSTEM_FOLDERS:
+            return True
+    return False
+
+
+def get_drive_letter(path):
+    """Extract drive letter from path."""
+    if len(path) >= 2 and path[1] == ':':
+        return path[0].upper()
+    return None
+
+
+def check_output_location(paths):
+    """Check if output location is on same drive as indexed paths."""
+    output_drive = get_drive_letter(SETTINGS["output_folder"])
+    if not output_drive:
+        return None
+    
+    indexed_drives = set()
+    for path in paths:
+        drive = get_drive_letter(path)
+        if drive:
+            indexed_drives.add(drive)
+    
+    if output_drive in indexed_drives:
+        return output_drive
+    return None
 
 
 def print_menu():
@@ -22,7 +108,8 @@ def print_menu():
     console.print("[cyan]2.[/cyan] Index all drives")
     console.print("[cyan]3.[/cyan] Index a specific drive")
     console.print("[cyan]4.[/cyan] View last result")
-    console.print("[cyan]5.[/cyan] Exit")
+    console.print("[cyan]5.[/cyan] Settings")
+    console.print("[cyan]6.[/cyan] Exit")
     console.print()
     console.print("[bold cyan]Enter your choice: [/bold cyan]", end="")
 
@@ -43,22 +130,93 @@ def format_size(size_bytes):
     return f"{size_bytes:.2f} PB"
 
 
+def show_settings():
+    """Display and allow editing of settings."""
+    clear_screen()
+    console.print("[bold cyan]SETTINGS[/bold cyan]")
+    console.print("-" * 40)
+    console.print(f"[cyan]1.[/cyan] Batch size: {SETTINGS['batch_size']} files")
+    console.print(f"[cyan]2.[/cyan] Batch delay: {SETTINGS['batch_delay']*1000:.1f}ms")
+    console.print(f"[cyan]3.[/cyan] Reduce process priority: {SETTINGS['reduce_priority']}")
+    console.print(f"[cyan]4.[/cyan] Exclude system folders: {SETTINGS['exclude_system_folders']}")
+    console.print(f"[cyan]5.[/cyan] Output folder: {SETTINGS['output_folder']}")
+    console.print(f"[cyan]6.[/cyan] Back to main menu")
+    console.print()
+    console.print("[bold cyan]Enter choice to modify: [/bold cyan]", end="")
+    
+    try:
+        choice = console.input().strip()
+    except EOFError:
+        return
+    
+    if choice == "1":
+        try:
+            console.print("\nEnter batch size (100-10000): ", end="")
+            new_size = int(console.input().strip())
+            if 100 <= new_size <= 10000:
+                SETTINGS["batch_size"] = new_size
+        except ValueError:
+            pass
+    elif choice == "2":
+        try:
+            console.print("\nEnter delay in ms (0-100): ", end="")
+            new_delay = int(console.input().strip())
+            if 0 <= new_delay <= 100:
+                SETTINGS["batch_delay"] = new_delay / 1000
+        except ValueError:
+            pass
+    elif choice == "3":
+        SETTINGS["reduce_priority"] = not SETTINGS["reduce_priority"]
+    elif choice == "4":
+        SETTINGS["exclude_system_folders"] = not SETTINGS["exclude_system_folders"]
+    elif choice == "5":
+        console.print("\nEnter output folder path: ", end="")
+        new_path = console.input().strip()
+        if new_path:
+            SETTINGS["output_folder"] = new_path
+    elif choice == "6":
+        return
+    
+    # Show updated settings
+    console.print("\n[green]Settings updated![/green]")
+    time.sleep(1)
+    show_settings()
+
+
 def index_path(paths, output_path, sort_by="path"):
     global last_result
+    
+    # Set low priority for system protection
+    set_low_priority()
     
     files = []
     total_count = 0
     
     console.print(f"\n[yellow]Starting indexing...[/yellow]")
-    console.print(f"Target: {', '.join(paths)}\n")
+    console.print(f"Target: {', '.join(paths)}")
+    
+    # Check output location warning
+    same_drive = check_output_location(paths)
+    if same_drive:
+        console.print(f"[yellow]Warning: Output will be saved to same drive ({same_drive}:) being indexed.[/yellow]")
+        console.print(f"         This may cause additional disk I/O on that drive.")
+    
+    # Show memory warning
+    mem_usage = get_memory_usage()
+    if mem_usage > SETTINGS["max_memory_mb"]:
+        console.print(f"[yellow]Warning: High memory usage detected ({mem_usage:.0f}MB).[/yellow]")
+        console.print(f"         Consider closing other applications for better performance.")
+    
+    console.print()
     
     # Phase 1: Quick scan to count files with spinner
     console.print("[bold]Scanning files...[/bold]")
     
     from src.indexer import index_directory
     
-    # Quick pass to count total files
+    # Quick pass to count total files (with system folder exclusion)
     all_files = []
+    skipped_system = 0
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -71,11 +229,19 @@ def index_path(paths, output_path, sort_by="path"):
             try:
                 console.print(f"  Scanning: {path}")
                 for metadata in index_directory(path):
+                    # Check for system folders
+                    if check_system_folders(metadata.path):
+                        skipped_system += 1
+                        continue
                     all_files.append(metadata)
                     # Update spinner to show we're still working
-                    progress.update(task, description=f"[cyan]Found {len(all_files):,} files...")
+                    if len(all_files) % 100 == 0:
+                        progress.update(task, description=f"[cyan]Found {len(all_files):,} files...")
             except Exception as e:
                 console.print(f"[red]  Error scanning {path}: {e}[/red]")
+    
+    if skipped_system > 0:
+        console.print(f"[dim]Skipped {skipped_system:,} files in system folders[/dim]")
     
     total_files = len(all_files)
     if total_files == 0:
@@ -88,7 +254,10 @@ def index_path(paths, output_path, sort_by="path"):
     
     console.print(f"[green]Found {total_files:,} files to index[/green]\n")
     
-    # Phase 2: Process files with progress bar
+    # Phase 2: Process files with progress bar and batch throttling
+    batch_size = SETTINGS["batch_size"]
+    batch_delay = SETTINGS["batch_delay"]
+    
     with Progress(
         SpinnerColumn("dots"),
         TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
@@ -105,41 +274,72 @@ def index_path(paths, output_path, sort_by="path"):
             status="Starting..."
         )
         
-        # Process files with progress updates
+        # Process files with progress updates and batch throttling
         for i, metadata in enumerate(all_files, 1):
             files.append(metadata)
+            
+            # Batch throttling to prevent disk saturation
+            if i % batch_size == 0:
+                time.sleep(batch_delay)
+                # Check memory and cleanup if needed
+                if get_memory_usage() > SETTINGS["max_memory_mb"]:
+                    gc.collect()
+            
+            # Update progress
             progress.update(task, advance=1, status=f"File {i:,}/{total_files:,}")
         
         progress.update(task, description="[green]Complete!", status="Done")
     
-    console.print(f"\n[bold green]Indexing completed![/bold green]")
-    console.print(f"Total files indexed: {total_count:,}")
+    # Clear memory
+    del all_files
+    gc.collect()
     
-    try:
-        from src.output import sort_files, create_index_result, save_with_duplicate_check
-        console.print("[dim]Sorting results...[/dim]")
-        sorted_files = sort_files(files, sort_by)
-        result = create_index_result(sorted_files, paths)
-        
-        # Get base name from output path
-        base_name = os.path.splitext(os.path.basename(output_path))[0]
-        
-        # Save files with duplicate protection to dedicated folder
-        console.print("[dim]Saving files...[/dim]")
-        saved_files = save_with_duplicate_check(result, base_name, indent=2)
-        
-        last_result = result
-        
-        console.print(f"[green]Main index saved to:[/green]")
-        console.print(f"    {saved_files['index_file']}")
-        console.print(f"[green]Directory structure saved to:[/green]")
-        console.print(f"    {saved_files['structure_file']}")
-        
-    except FileExistsError as e:
-        console.print(f"[red]File already exists: {e}[/red]")
-        console.print("[yellow]Please try a different filename or wait a moment.[/yellow]")
-    except Exception as e:
-        console.print(f"[red]Error saving results: {e}[/red]")
+    console.print(f"\n[bold green]Indexing completed![/bold green]")
+    console.print(f"Total files indexed: {len(files):,}")
+    
+    # Try to save with retry loop for duplicate filenames
+    max_attempts = 3
+    for attempt in range(max_attempts):
+        try:
+            from src.output import sort_files, create_index_result, save_with_duplicate_check
+            console.print("[dim]Sorting results...[/dim]")
+            sorted_files = sort_files(files, sort_by)
+            result = create_index_result(sorted_files, paths)
+            
+            # Get base name from output path
+            base_name = os.path.splitext(os.path.basename(output_path))[0]
+            
+            # Save files with duplicate check
+            console.print("[dim]Saving files...[/dim]")
+            saved_files = save_with_duplicate_check(result, base_name, indent=2, output_dir=SETTINGS["output_folder"])
+            
+            last_result = result
+            
+            console.print(f"[green]Main index saved to:[/green]")
+            console.print(f"    {saved_files['index_file']}")
+            console.print(f"[green]Directory structure saved to:[/green]")
+            console.print(f"    {saved_files['structure_file']}")
+            break
+            
+        except FileExistsError as e:
+            if attempt < max_attempts - 1:
+                console.print(f"[yellow]{e}[/yellow]")
+                console.print("[yellow]Please enter a different filename: [/yellow]", end="")
+                try:
+                    new_name = console.input().strip()
+                    if new_name:
+                        # Update output_path with new name
+                        output_path = new_name
+                        if not output_path.endswith('.json'):
+                            output_path += '.json'
+                        continue  # Retry with new name
+                except EOFError:
+                    pass
+            console.print(f"[red]Operation cancelled. File already exists.[/red]")
+            break
+        except Exception as e:
+            console.print(f"[red]Error saving results: {e}[/red]")
+            break
     
     console.print("\n[bold]Press Enter to continue...[/bold]")
     try:
@@ -193,7 +393,7 @@ def index_all_drives():
     
     console.print(f"\n[bold]Found {len(drives)} drives:[/bold]")
     for drive in drives:
-        console.print(f"  • {drive}")
+        console.print(f"  * {drive}")
     
     confirm = console.input("\n[yellow]Index all drives? This may take a long time. (y/n): [/yellow]").strip().lower()
     
@@ -223,7 +423,7 @@ def index_specific_drive():
     
     console.print("\n[bold]Available drives:[/bold]")
     for i, drive in enumerate(drives, 1):
-        console.print(f"[cyan]{i}. {drive}[/cyan]")
+        console.print(f"[cyan]{i}.[/cyan] {drive}")
     console.print()
     
     try:
@@ -278,7 +478,7 @@ def view_last_result():
     
     console.print("\n[bold]First 10 files:[/bold]")
     for i, f in enumerate(last_result.files[:10], 1):
-        console.print(f"[cyan]{i}. {f.name}[/cyan]")
+        console.print(f"[cyan]{i}.[/cyan] {f.name}")
         console.print(f"   [dim]Path: {f.path}[/dim]")
         console.print(f"   [dim]Size: {format_size(f.size)}[/dim]")
     
@@ -309,6 +509,8 @@ def main():
         elif choice == '4':
             view_last_result()
         elif choice == '5':
+            show_settings()
+        elif choice == '6':
             console.print("\n[bold green]Goodbye![/bold green]")
             break
         else:

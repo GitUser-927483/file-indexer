@@ -183,27 +183,28 @@ def get_file_saver():
     return saver
 
 
-def save_with_duplicate_check(index_result: IndexResult, base_name: str, indent: int = 2) -> Dict[str, str]:
+def save_with_duplicate_check(index_result: IndexResult, base_name: str, indent: int = 2, output_dir: str = None) -> Dict[str, str]:
     """
-    Save files with duplicate protection and return file paths.
+    Save files with DUPLICATE CHECK only - no auto-rename.
     Returns dictionary with file paths.
+    Raises FileExistsError if file already exists.
     """
-    output_dir = "file_indexer/output"
+    # Use default output directory or custom
+    if output_dir is None:
+        output_dir = "file_indexer/output"
+    
     os.makedirs(output_dir, exist_ok=True)
     
-    # Get current timestamp for unique filenames
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    # Create base filenames
+    # Create base filenames WITHOUT timestamp
     base_filename = os.path.join(output_dir, base_name)
+    index_filepath = f"{base_filename}.json"
+    structure_filepath = f"{base_filename}_structure.txt"
     
-    # Add timestamp to avoid duplicates
-    index_filepath = f"{base_filename}_{timestamp}.json"
-    structure_filepath = f"{base_filename}_structure_{timestamp}.txt"  # Changed to .txt for tree format
-    
-    # Check if files exist (should not with timestamp, but just in case)
-    if os.path.exists(index_filepath) or os.path.exists(structure_filepath):
-        raise FileExistsError("Generated file names already exist. This should not happen with timestamp.")
+    # Check if files already exist - if so, raise error to alert user
+    if os.path.exists(index_filepath):
+        raise FileExistsError(f"A file named '{base_name}.json' already exists in {output_dir}")
+    if os.path.exists(structure_filepath):
+        raise FileExistsError(f"A file named '{base_name}_structure.txt' already exists in {output_dir}")
     
     # Save index file (JSON)
     with open(index_filepath, "w", encoding="utf-8") as f:
