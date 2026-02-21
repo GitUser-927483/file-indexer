@@ -32,7 +32,7 @@ Run the file indexer:
 ```bash
 python gui.py
 ```
-
+or simply run " indexer " on your CMD on the default directory
 ### Menu Options
 
 1. **Index specific directory** - Index a single folder
