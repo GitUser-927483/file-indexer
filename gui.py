@@ -474,39 +474,138 @@ def index_specific_drive():
 
 
 def view_last_result():
-    global last_result
+    """View saved index results from the output folder."""
+    import json
+    from datetime import datetime
     
-    if last_result is None:
-        console.print("[yellow]No previous indexing result available.[/yellow]")
+    # Get output folder from settings
+    output_folder = SETTINGS["output_folder"]
+    
+    # Check if output folder exists
+    if not os.path.exists(output_folder):
+        console.print(f"[yellow]Output folder not found: {output_folder}[/yellow]")
         try:
-            console.input()
+            console.input("\nPress Enter to continue...")
         except EOFError:
             pass
         return
     
-    clear_screen()
-    console.print("\n[bold cyan]LAST INDEXING RESULT[/bold cyan]")
-    console.print("-" * 40)
+    # Find all JSON files (exclude structure files)
+    json_files = []
+    for f in os.listdir(output_folder):
+        if f.endswith('.json') and '_structure' not in f:
+            filepath = os.path.join(output_folder, f)
+            json_files.append((f, filepath))
     
-    console.print("\n[bold]Summary:[/bold]")
-    console.print(f"[green]  Total files: {last_result.summary.total_files:,}[/green]")
-    console.print(f"[green]  Total size: {format_size(last_result.summary.total_size)}[/green]")
-    console.print(f"[green]  Indexed paths: {', '.join(last_result.summary.indexed_paths)}[/green]")
-    console.print(f"[green]  Timestamp: {last_result.summary.timestamp.strftime('%Y-%m-%d %H:%M:%S')}[/green]")
+    if not json_files:
+        console.print("[yellow]No index files found in output folder.[/yellow]")
+        try:
+            console.input("\nPress Enter to continue...")
+        except EOFError:
+            pass
+        return
     
-    console.print("\n[bold]First 10 files:[/bold]")
-    for i, f in enumerate(last_result.files[:10], 1):
-        console.print(f"[cyan]{i}.[/cyan] {f.name}")
-        console.print(f"   [dim]Path: {f.path}[/dim]")
-        console.print(f"   [dim]Size: {format_size(f.size)}[/dim]")
+    # Sort by modification time (newest first)
+    json_files.sort(key=lambda x: os.path.getmtime(x[1]), reverse=True)
     
-    if len(last_result.files) > 10:
-        console.print(f"\n[dim]  ... and {len(last_result.files) - 10} more files[/dim]")
-    
-    try:
-        console.input()
-    except EOFError:
-        pass
+    while True:
+        clear_screen()
+        console.print("[bold cyan]VIEW SAVED RESULTS[/bold cyan]")
+        console.print("-" * 50)
+        
+        # Display available files
+        for i, (filename, filepath) in enumerate(json_files, 1):
+            # Get file info
+            file_size = os.path.getsize(filepath)
+            mod_time = datetime.fromtimestamp(os.path.getmtime(filepath))
+            console.print(f"[cyan]{i}.[/cyan] {filename}")
+            console.print(f"     [dim]Size: {format_size(file_size)} | Modified: {mod_time.strftime('%Y-%m-%d %H:%M')}[/dim]")
+        
+        console.print()
+        console.print(f"[cyan]0.[/cyan] Back to main menu")
+        console.print()
+        console.print("[bold cyan]Select file to view: [/bold cyan]", end="")
+        
+        try:
+            choice = console.input().strip()
+        except EOFError:
+            return
+        
+        if choice == '0':
+            return
+        
+        # Try to parse choice
+        try:
+            idx = int(choice) - 1
+            if idx < 0 or idx >= len(json_files):
+                console.print("[red]Invalid selection.[/red]")
+                time.sleep(1)
+                continue
+        except ValueError:
+            console.print("[red]Invalid input.[/red]")
+            time.sleep(1)
+            continue
+        
+        # Load and display the selected file
+        filename, filepath = json_files[idx]
+        
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            clear_screen()
+            console.print(f"[bold cyan]VIEWING: {filename}[/bold cyan]")
+            console.print("-" * 50)
+            
+            # Display summary
+            if 'summary' in data:
+                summary = data['summary']
+                console.print("\n[bold]Summary:[/bold]")
+                console.print(f"  [green]Total files:[/green] {summary.get('total_files', 'N/A'):,}")
+                console.print(f"  [green]Total size:[/green] {format_size(summary.get('total_size', 0))}")
+                
+                indexed_paths = summary.get('indexed_paths', [])
+                if indexed_paths:
+                    console.print(f"  [green]Indexed paths:[/green] {', '.join(indexed_paths)}")
+                
+                timestamp = summary.get('timestamp', '')
+                if timestamp:
+                    # Parse timestamp if it's a string
+                    try:
+                        if isinstance(timestamp, str):
+                            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                            timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except:
+                        pass
+                    console.print(f"  [green]Timestamp:[/green] {timestamp}")
+            
+            # Display first 15 files
+            if 'files' in data:
+                files = data['files']
+                console.print(f"\n[bold]First 15 files:[/bold]")
+                for i, f in enumerate(files[:15], 1):
+                    name = f.get('name', 'Unknown')
+                    path = f.get('path', '')
+                    size = f.get('size', 0)
+                    console.print(f"\n  [cyan]{i}.[/cyan] {name}")
+                    console.print(f"      [dim]Path: {path}[/dim]")
+                    console.print(f"      [dim]Size: {format_size(size)}[/dim]")
+                
+                if len(files) > 15:
+                    console.print(f"\n[dim]  ... and {len(files) - 15:,} more files[/dim]")
+            
+            console.print("\n[bold cyan]Press Enter to continue...[/bold cyan]")
+            try:
+                console.input()
+            except EOFError:
+                pass
+                
+        except json.JSONDecodeError:
+            console.print(f"[red]Error: Could not parse JSON file.[/red]")
+            time.sleep(1)
+        except Exception as e:
+            console.print(f"[red]Error loading file: {e}[/red]")
+            time.sleep(1)
 
 
 def main():
